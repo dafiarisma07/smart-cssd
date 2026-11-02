@@ -2,18 +2,55 @@
 import React,{useEffect,useState} from 'react';
 import {Activity,LayoutDashboard,History,Settings,Thermometer, Droplets,ShieldCheck,AlertTriangle,Wifi,Bell,Download,Menu, X, RefreshCw, Server, Gauge} from 'lucide-react';
 import {LineChart,Line,XAxis,YAxis,CartesianGrid,Tooltip,ResponsiveContainer,AreaChart,Area} from 'recharts';
+import { supabase, isSupabaseConfigured } from './supabase';
 
 const nav=[['monitor','Monitoring',LayoutDashboard],['history','Riwayat Monitoring',History],['settings','Pengaturan & Notifikasi',Settings]];
 const stamp=()=>new Date().toLocaleString('id-ID',{dateStyle:'medium',timeStyle:'medium'});
-const initialHistory=()=>Array.from({length:12},(_,i)=>({time:new Date(Date.now()-(11-i)*5*60000).toLocaleTimeString('id-ID',{hour:'2-digit',minute:'2-digit'}),temp:+(23.8+Math.sin(i)*.6).toFixed(1),hum:+(47+Math.cos(i)*3).toFixed(1)}));
+const initialHistory=()=>Array.from({length:12},(_,i)=>({time:new Date(Date.now()-(11-i)*5*60000).toLocaleTimeString('id-ID',{hour:'2-digit',minute:'2-digit'}),temp:+(23.8+Math.sin(i)*.6).toFixed(1),hum:+(47+Math.cos(i)*3).toFixed(1),status:'NORMAL'}));
+const mapDbRow=row=>({time:new Date(row.recorded_at).toLocaleTimeString('id-ID',{hour:'2-digit',minute:'2-digit',second:'2-digit'}),temp:Number(row.temperature),hum:Number(row.humidity),status:row.status,recordedAt:row.recorded_at});
 
 export default function App(){
  const [page,setPage]=useState('monitor'),[mobile,setMobile]=useState(false);
  const [bounds,setBounds]=useState({tmin:18,tmax:25,hmin:30,hmax:60}),[form,setForm]=useState(bounds);
  const [mode,setMode]=useState('normal'),[reading,setReading]=useState({temp:23.8,hum:48}),[history,setHistory]=useState(initialHistory),[last,setLast]=useState(stamp());
  const [alerts,setAlerts]=useState([{time:stamp(),title:'Sistem simulasi dimulai',detail:'Dashboard prototype SMART CSSD aktif.',kind:'info'}]),[toast,setToast]=useState('');
+ const [dbState,setDbState]=useState(isSupabaseConfigured?'Menghubungkan...':'Belum dikonfigurasi');
  const status=reading.temp<bounds.tmin||reading.temp>bounds.tmax||reading.hum<bounds.hmin||reading.hum>bounds.hmax?'WARNING':'NORMAL';
- useEffect(()=>{let id=setInterval(()=>{let t=23.5+Math.random(),h=45+Math.random()*6;if(mode==='highT')t=26+Math.random();if(mode==='lowT')t=16+Math.random();if(mode==='highH')h=64+Math.random()*4;if(mode==='lowH')h=24+Math.random()*4;let r={temp:+t.toFixed(1),hum:+h.toFixed(1)};setReading(r);let tm=new Date().toLocaleTimeString('id-ID');setHistory(old=>[...old.slice(-23),{time:tm,temp:r.temp,hum:r.hum}]);setLast(stamp());if(r.temp<bounds.tmin||r.temp>bounds.tmax||r.hum<bounds.hmin||r.hum>bounds.hmax)setAlerts(old=>old[0]?.kind==='warning'?old:[{time:stamp(),title:'Peringatan kondisi lingkungan',detail:`Suhu ${r.temp}°C • Kelembapan ${r.hum}% RH`,kind:'warning'},...old].slice(0,20));},4000);return()=>clearInterval(id)},[mode,bounds]);
+ useEffect(()=>{
+  let active=true;
+  if(!supabase){setDbState('Belum dikonfigurasi');return()=>{active=false};}
+  setDbState('Menghubungkan...');
+  supabase.from('monitoring_data').select('id, recorded_at, temperature, humidity, status').order('recorded_at',{ascending:false}).limit(24)
+   .then(({data,error})=>{
+    if(!active)return;
+    if(error){setDbState('Gagal membaca database');return;}
+    if(data?.length){const rows=data.map(mapDbRow).reverse();setHistory(rows);setReading({temp:rows[rows.length-1].temp,hum:rows[rows.length-1].hum});setLast(stamp());}
+    setDbState('Terhubung ke Supabase');
+   });
+  return()=>{active=false};
+ },[]);
+ useEffect(()=>{
+  let id=setInterval(async()=>{
+   let t=23.5+Math.random(),h=45+Math.random()*6;
+   if(mode==='highT')t=26+Math.random();
+   if(mode==='lowT')t=16+Math.random();
+   if(mode==='highH')h=64+Math.random()*4;
+   if(mode==='lowH')h=24+Math.random()*4;
+   let r={temp:+t.toFixed(1),hum:+h.toFixed(1)};
+   const readingStatus=r.temp<bounds.tmin||r.temp>bounds.tmax||r.hum<bounds.hmin||r.hum>bounds.hmax?'WARNING':'NORMAL';
+   const tm=new Date().toLocaleTimeString('id-ID');
+   const sample={time:tm,temp:r.temp,hum:r.hum,status:readingStatus};
+   setReading(r);
+   setHistory(old=>[...old.slice(-23),sample]);
+   setLast(stamp());
+   if(supabase){
+    const {error}=await supabase.from('monitoring_data').insert({temperature:r.temp,humidity:r.hum,status:readingStatus});
+    if(error)setDbState('Gagal menyimpan data');else setDbState('Terhubung ke Supabase');
+   }
+   if(readingStatus==='WARNING')setAlerts(old=>old[0]?.kind==='warning'?old:[{time:stamp(),title:'Peringatan kondisi lingkungan',detail:`Suhu ${r.temp}°C • Kelembapan ${r.hum}% RH`,kind:'warning'},...old].slice(0,20));
+  },4000);
+  return()=>clearInterval(id);
+ },[mode,bounds]);
  const notify=s=>{setToast(s);setTimeout(()=>setToast(''),2500)};
  const exportCSV=()=>{let csv='Waktu,Suhu (C),Kelembapan (% RH)\\n'+history.map(x=>`${x.time},${x.temp},${x.hum}`).join('\\n');let a=document.createElement('a');a.href=URL.createObjectURL(new Blob([csv],{type:'text/csv'}));a.download='riwayat-smart-cssd.csv';a.click();notify('CSV berhasil disiapkan')};
  const current=nav.find(x=>x[0]===page);
@@ -35,10 +72,10 @@ export default function App(){
   {page==='history'&&<><div className="intro"><div><h2>Riwayat pengukuran</h2><p>Data suhu dan kelembapan selama simulasi berjalan.</p></div><button className="primary" onClick={exportCSV}><Download size={15}/> Ekspor CSV</button></div><div className="stats"><Stat label="Jumlah sampel" value={history.length}/><Stat label="Rata-rata suhu" value={(history.reduce((a,x)=>a+x.temp,0)/history.length).toFixed(1)+' °C'}/><Stat label="Rata-rata kelembapan" value={(history.reduce((a,x)=>a+x.hum,0)/history.length).toFixed(1)+'%'}/></div>
    <section className="panel"><PanelTitle title="Grafik suhu" sub="Riwayat pembacaan suhu (°C)"/><div className="chart tall"><ResponsiveContainer><AreaChart data={history}><defs><linearGradient id="fillt" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stopColor="#286fc2" stopOpacity={.22}/><stop offset="100%" stopColor="#286fc2" stopOpacity={0}/></linearGradient></defs><CartesianGrid stroke="#edf1f6" vertical={false}/><XAxis dataKey="time" tick={{fontSize:10}}/><YAxis tick={{fontSize:10}}/><Tooltip/><Area dataKey="temp" name="Suhu" stroke="#286fc2" fill="url(#fillt)"/></AreaChart></ResponsiveContainer></div></section>
    <section className="panel"><PanelTitle title="Grafik kelembapan" sub="Riwayat pembacaan kelembapan (% RH)"/><div className="chart tall"><ResponsiveContainer><AreaChart data={history}><defs><linearGradient id="fillh" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stopColor="#18a6b9" stopOpacity={.22}/><stop offset="100%" stopColor="#18a6b9" stopOpacity={0}/></linearGradient></defs><CartesianGrid stroke="#edf1f6" vertical={false}/><XAxis dataKey="time" tick={{fontSize:10}}/><YAxis tick={{fontSize:10}}/><Tooltip/><Area dataKey="hum" name="Kelembapan" stroke="#18a6b9" fill="url(#fillh)"/></AreaChart></ResponsiveContainer></div></section>
-   <section className="panel"><PanelTitle title="Tabel data pengukuran" sub="Sampel terbaru"/><div className="tablewrap"><table><thead><tr><th>Waktu</th><th>Suhu</th><th>Kelembapan</th><th>Status</th></tr></thead><tbody>{[...history].reverse().map((x,i)=><tr key={i}><td>{x.time}</td><td>{x.temp} °C</td><td>{x.hum} % RH</td><td><em>NORMAL</em></td></tr>)}</tbody></table></div></section>
+   <section className="panel"><PanelTitle title="Tabel data pengukuran" sub="Sampel terbaru"/><div className="tablewrap"><table><thead><tr><th>Waktu</th><th>Suhu</th><th>Kelembapan</th><th>Status</th></tr></thead><tbody>{[...history].reverse().map((x,i)=><tr key={i}><td>{x.time}</td><td>{x.temp} °C</td><td>{x.hum} % RH</td><td><em className={x.status==='WARNING'?'bad':''}>{x.status||'NORMAL'}</em></td></tr>)}</tbody></table></div></section>
   </>}
   {page==='settings'&&<><div className="intro"><div><h2>Pengaturan sistem</h2><p>Atur batas parameter simulasi dan tinjau catatan peringatan.</p></div></div><div className="columns settingscols"><section className="panel"><PanelTitle title="Batas parameter lingkungan" sub="Nilai awal untuk keperluan simulasi prototype."/><h4>SUHU RUANGAN</h4><div className="fields"><label>Minimum (°C)<input type="number" value={form.tmin} onChange={e=>setForm({...form,tmin:e.target.value})}/></label><label>Maksimum (°C)<input type="number" value={form.tmax} onChange={e=>setForm({...form,tmax:e.target.value})}/></label></div><h4>KELEMBAPAN RELATIF</h4><div className="fields"><label>Minimum (% RH)<input type="number" value={form.hmin} onChange={e=>setForm({...form,hmin:e.target.value})}/></label><label>Maksimum (% RH)<input type="number" value={form.hmax} onChange={e=>setForm({...form,hmax:e.target.value})}/></label></div><p className="warningnote">Nilai ini merupakan parameter awal simulasi, bukan standar operasional final CSSD. Sesuaikan dengan SOP dan ketentuan yang berlaku sebelum penerapan nyata.</p><button className="primary" onClick={()=>{if(+form.tmin>=+form.tmax||+form.hmin>=+form.hmax){notify('Nilai minimum harus lebih kecil dari maksimum.');return}setBounds({tmin:+form.tmin,tmax:+form.tmax,hmin:+form.hmin,hmax:+form.hmax});notify('Pengaturan simulasi disimpan.')}}>Simpan pengaturan</button></section>
-   <section className="panel"><PanelTitle title="Status koneksi" sub="Informasi konektivitas prototype"/><div className="offline"><Wifi size={20}/><div><b>Belum terhubung</b><small>Wi-Fi / ESP32 belum diintegrasikan</small></div><em>OFFLINE</em></div>{[['Mode data','Simulasi lokal'],['Database','Belum dikonfigurasi'],['Platform rencana','Supabase'],['Hosting rencana','Vercel']].map(x=><div className="settingrow"><span>{x[0]}</span><b>{x[1]}</b></div>)}</section></div>
+   <section className="panel"><PanelTitle title="Status koneksi" sub="Informasi konektivitas prototype"/><div className="offline"><Wifi size={20}/><div><b>{dbState}</b><small>{isSupabaseConfigured?'Penyimpanan data simulasi melalui Supabase':'Periksa konfigurasi file .env'}</small></div><em>{dbState==='Terhubung ke Supabase'?'ONLINE':'CHECK'}</em></div>{[['Mode data','Simulasi lokal'],['Database',dbState],['Platform database','Supabase'],['Hosting','Vercel']].map(x=><div className="settingrow"><span>{x[0]}</span><b>{x[1]}</b></div>)}</section></div>
    <section className="panel"><PanelTitle title="Riwayat notifikasi" sub="Catatan perubahan status selama simulasi"/>{alerts.map((a,i)=><div className="alertrow" key={i}><span className={a.kind==='warning'?'alertbad':'alertinfo'}>{a.kind==='warning'?<AlertTriangle/>:<Activity/>}</span><div><b>{a.title}</b><small>{a.detail}</small></div><time>{a.time}</time></div>)}</section>
   </>}
   <footer>© 2026 SMART CSSD · Prototype IoT Monitoring <span>● Data simulasi</span></footer>
