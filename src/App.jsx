@@ -1,5 +1,5 @@
 
-import React,{useEffect,useState} from 'react';
+import React,{useEffect,useRef,useState} from 'react';
 import {Activity,LayoutDashboard,History,Settings,Thermometer, Droplets,ShieldCheck,AlertTriangle,Wifi,Bell,Download,Menu, X, RefreshCw, Server, Gauge} from 'lucide-react';
 import {LineChart,Line,XAxis,YAxis,CartesianGrid,Tooltip,ResponsiveContainer,AreaChart,Area} from 'recharts';
 import { supabase, isSupabaseConfigured } from './supabase';
@@ -15,7 +15,46 @@ export default function App(){
  const [mode,setMode]=useState('normal'),[reading,setReading]=useState({temp:23.8,hum:48}),[history,setHistory]=useState(initialHistory),[last,setLast]=useState(stamp());
  const [alerts,setAlerts]=useState([{time:stamp(),title:'Sistem simulasi dimulai',detail:'Dashboard prototype SMART CSSD aktif.',kind:'info'}]),[toast,setToast]=useState('');
  const [dbState,setDbState]=useState(isSupabaseConfigured?'Menghubungkan...':'Belum dikonfigurasi');
+ const [soundEnabled,setSoundEnabled]=useState(false);
+ const audioContextRef=useRef(null);
  const status=reading.temp<bounds.tmin||reading.temp>bounds.tmax||reading.hum<bounds.hmin||reading.hum>bounds.hmax?'WARNING':'NORMAL';
+ const playAlarmPair=()=>{
+  const AudioContextClass=window.AudioContext||window.webkitAudioContext;
+  if(!AudioContextClass)return;
+  if(!audioContextRef.current)audioContextRef.current=new AudioContextClass();
+  const ctx=audioContextRef.current;
+  if(ctx.state==='suspended')ctx.resume();
+  [0,0.28].forEach(offset=>{
+   const osc=ctx.createOscillator();
+   const gain=ctx.createGain();
+   const start=ctx.currentTime+offset;
+   osc.type='sine';
+   osc.frequency.setValueAtTime(880,start);
+   gain.gain.setValueAtTime(0.0001,start);
+   gain.gain.exponentialRampToValueAtTime(0.16,start+0.02);
+   gain.gain.exponentialRampToValueAtTime(0.0001,start+0.18);
+   osc.connect(gain);gain.connect(ctx.destination);
+   osc.start(start);osc.stop(start+0.2);
+  });
+ };
+ const toggleAlarm=async()=>{
+  if(soundEnabled){setSoundEnabled(false);return;}
+  const AudioContextClass=window.AudioContext||window.webkitAudioContext;
+  if(!AudioContextClass){notify('Browser tidak mendukung alarm audio.');return;}
+  try{
+   if(!audioContextRef.current)audioContextRef.current=new AudioContextClass();
+   await audioContextRef.current.resume();
+   setSoundEnabled(true);
+   notify('Alarm suara diaktifkan.');
+  }catch{notify('Audio belum diizinkan oleh browser.');}
+ };
+ useEffect(()=>{
+  if(status!=='WARNING'||!soundEnabled)return;
+  playAlarmPair();
+  const id=setInterval(playAlarmPair,1400);
+  return()=>clearInterval(id);
+ },[status,soundEnabled]);
+
  useEffect(()=>{
   let active=true;
   if(!supabase){setDbState('Belum dikonfigurasi');return()=>{active=false};}
@@ -75,7 +114,7 @@ export default function App(){
    <section className="panel"><PanelTitle title="Tabel data pengukuran" sub="Sampel terbaru"/><div className="tablewrap"><table><thead><tr><th>Waktu</th><th>Suhu</th><th>Kelembapan</th><th>Status</th></tr></thead><tbody>{[...history].reverse().map((x,i)=><tr key={i}><td>{x.time}</td><td>{x.temp} °C</td><td>{x.hum} % RH</td><td><em className={x.status==='WARNING'?'bad':''}>{x.status||'NORMAL'}</em></td></tr>)}</tbody></table></div></section>
   </>}
   {page==='settings'&&<><div className="intro"><div><h2>Pengaturan sistem</h2><p>Atur batas parameter simulasi dan tinjau catatan peringatan.</p></div></div><div className="columns settingscols"><section className="panel"><PanelTitle title="Batas parameter lingkungan" sub="Nilai awal untuk keperluan simulasi prototype."/><h4>SUHU RUANGAN</h4><div className="fields"><label>Minimum (°C)<input type="number" value={form.tmin} onChange={e=>setForm({...form,tmin:e.target.value})}/></label><label>Maksimum (°C)<input type="number" value={form.tmax} onChange={e=>setForm({...form,tmax:e.target.value})}/></label></div><h4>KELEMBAPAN RELATIF</h4><div className="fields"><label>Minimum (% RH)<input type="number" value={form.hmin} onChange={e=>setForm({...form,hmin:e.target.value})}/></label><label>Maksimum (% RH)<input type="number" value={form.hmax} onChange={e=>setForm({...form,hmax:e.target.value})}/></label></div><p className="warningnote">Nilai ini merupakan parameter awal simulasi, bukan standar operasional final CSSD. Sesuaikan dengan SOP dan ketentuan yang berlaku sebelum penerapan nyata.</p><button className="primary" onClick={()=>{if(+form.tmin>=+form.tmax||+form.hmin>=+form.hmax){notify('Nilai minimum harus lebih kecil dari maksimum.');return}setBounds({tmin:+form.tmin,tmax:+form.tmax,hmin:+form.hmin,hmax:+form.hmax});notify('Pengaturan simulasi disimpan.')}}>Simpan pengaturan</button></section>
-   <section className="panel"><PanelTitle title="Status koneksi" sub="Informasi konektivitas prototype"/><div className="offline"><Wifi size={20}/><div><b>{dbState}</b><small>{isSupabaseConfigured?'Penyimpanan data simulasi melalui Supabase':'Periksa konfigurasi file .env'}</small></div><em>{dbState==='Terhubung ke Supabase'?'ONLINE':'CHECK'}</em></div>{[['Mode data','Simulasi lokal'],['Database',dbState],['Platform database','Supabase'],['Hosting','Vercel']].map(x=><div className="settingrow"><span>{x[0]}</span><b>{x[1]}</b></div>)}</section></div>
+   <section className="panel"><PanelTitle title="Status koneksi" sub="Informasi konektivitas prototype"/><div className="settingrow"><span>Alarm suara dashboard</span><button className="primary" onClick={toggleAlarm}>{soundEnabled?'Matikan suara':'Aktifkan suara'}</button></div><p className="note">Jika diaktifkan, bunyi beep-beep akan berulang saat status WARNING dan berhenti saat kembali NORMAL.</p><div className="offline"><Wifi size={20}/><div><b>{dbState}</b><small>{isSupabaseConfigured?'Penyimpanan data simulasi melalui Supabase':'Periksa konfigurasi file .env'}</small></div><em>{dbState==='Terhubung ke Supabase'?'ONLINE':'CHECK'}</em></div>{[['Mode data','Simulasi lokal'],['Database',dbState],['Platform database','Supabase'],['Hosting','Vercel']].map(x=><div className="settingrow"><span>{x[0]}</span><b>{x[1]}</b></div>)}</section></div>
    <section className="panel"><PanelTitle title="Riwayat notifikasi" sub="Catatan perubahan status selama simulasi"/>{alerts.map((a,i)=><div className="alertrow" key={i}><span className={a.kind==='warning'?'alertbad':'alertinfo'}>{a.kind==='warning'?<AlertTriangle/>:<Activity/>}</span><div><b>{a.title}</b><small>{a.detail}</small></div><time>{a.time}</time></div>)}</section>
   </>}
   <footer>© 2026 SMART CSSD · Prototype IoT Monitoring <span>● Data simulasi</span></footer>
